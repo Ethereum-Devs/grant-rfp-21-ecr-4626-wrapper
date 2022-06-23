@@ -1,18 +1,19 @@
 import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
 import { expect } from "chai";
-import { Contract, Signer } from "ethers";
-import { ethers, upgrades } from "hardhat";
+import { ethers } from "hardhat";
 import { beforeEach, describe, it } from "mocha";
-import { MockERC20 } from "../typechain";
+import { MockERC20, MockIdleCDO, TrancheWrapper } from "../typechain";
 
-describe("Tranche wrapper", function () {
+describe("Tranche", function () {
   let admin: SignerWithAddress;
   let addr1: SignerWithAddress;
   let addr2: SignerWithAddress;
-  let addr3: SignerWithAddress;
   let addrs: SignerWithAddress[];
-  let IdleCDO: Contract;
+  let addr3: SignerWithAddress;
+  let IdleCDO: MockIdleCDO;
   let token: MockERC20;
+  let AATranche: TrancheWrapper;
+  let BBTranche: TrancheWrapper;
 
   beforeEach("deploy", async () => {
     [admin, addr1, addr2, addr3, ...addrs] = await ethers.getSigners();
@@ -25,51 +26,130 @@ describe("Tranche wrapper", function () {
     await (await token.mint(addr3.address, 10000)).wait();
 
     const IdleCDOF = await ethers.getContractFactory("MockIdleCDO");
-    const params = ["uri", token.address];
-    IdleCDO = await upgrades.deployProxy(IdleCDOF, params);
+    IdleCDO = await IdleCDOF.deploy(token.address);
     await IdleCDO.deployed();
-  });
 
-  it("deploy success with 2 vaults", async function () {
-    const total = await IdleCDO.totalSupply();
-    expect(total.toNumber()).to.be.eq(2);
-    const vaultAA = await IdleCDO.vaults(1);
-    expect(vaultAA.asset).to.be.eq(token.address);
-    const vaultBB = await IdleCDO.vaults(2);
-    expect(vaultBB.asset).to.be.eq(token.address);
-  });
+    AATranche = await ethers.getContractAt(
+      "TrancheWrapper",
+      await IdleCDO.AATranche()
+    );
+    BBTranche = await ethers.getContractAt(
+      "TrancheWrapper",
+      await IdleCDO.BBTranche()
+    );
 
-  it("depositAA", async () => {
     await (await token.connect(addr1).approve(IdleCDO.address, 10000)).wait();
-    await (await IdleCDO.connect(addr1).depositAA(10000)).wait();
-    let addr1Bal = await IdleCDO.balanceOf(addr1.address, 1);
-    expect(addr1Bal.toNumber()).to.be.eq(10000);
-  });
-
-  it("withdrawAA", async () => {
-    await (await token.connect(addr1).approve(IdleCDO.address, 10000)).wait();
-    await (await IdleCDO.connect(addr1).depositAA(10000)).wait();
-    let addr1Bal = await IdleCDO.balanceOf(addr1.address, 1);
-    expect(addr1Bal.toNumber()).to.be.eq(10000);
-    await (await IdleCDO.connect(addr1).withdrawAA(10000)).wait();
-    addr1Bal = await IdleCDO.balanceOf(addr1.address, 1);
-    expect(addr1Bal.toNumber()).to.be.eq(0);
-    let tokenbal = await token.balanceOf(addr1.address);
-    expect(tokenbal.toNumber()).to.be.eq(10000);
-  });
-
-  it("depositAA and depositBB", async () => {
-    await (await token.connect(addr1).approve(IdleCDO.address, 10000)).wait();
-    await (await IdleCDO.connect(addr1).depositAA(10000)).wait();
-    let addr1Bal = await IdleCDO.balanceOf(addr1.address, 1);
-    expect(addr1Bal.toNumber()).to.be.eq(10000);
     await (await token.connect(addr2).approve(IdleCDO.address, 10000)).wait();
-    await (await IdleCDO.connect(addr2).depositBB(10000)).wait();
-    let addr2Bal = await IdleCDO.balanceOf(addr2.address, 2);
-    expect(addr2Bal.toNumber()).to.be.eq(10000);
     await (await token.connect(addr3).approve(IdleCDO.address, 10000)).wait();
-    await (await IdleCDO.connect(addr3).depositAA(10000)).wait();
-    let addr3Bal = await IdleCDO.balanceOf(addr3.address, 1);
-    expect(addr3Bal.toNumber()).to.be.eq(5000);
+
+    await (await token.connect(addr1).approve(AATranche.address, 10000)).wait();
+    await (await token.connect(addr2).approve(AATranche.address, 10000)).wait();
+    await (await token.connect(addr3).approve(AATranche.address, 10000)).wait();
+
+    await (
+      await AATranche.connect(addr1).approve(AATranche.address, 10000)
+    ).wait();
+    await (
+      await AATranche.connect(addr2).approve(AATranche.address, 10000)
+    ).wait();
+    await (
+      await AATranche.connect(addr3).approve(AATranche.address, 10000)
+    ).wait();
+
+    await (await token.connect(addr1).approve(BBTranche.address, 10000)).wait();
+    await (await token.connect(addr2).approve(BBTranche.address, 10000)).wait();
+    await (await token.connect(addr3).approve(BBTranche.address, 10000)).wait();
+
+    await (
+      await BBTranche.connect(addr1).approve(BBTranche.address, 10000)
+    ).wait();
+    await (
+      await BBTranche.connect(addr2).approve(BBTranche.address, 10000)
+    ).wait();
+    await (
+      await BBTranche.connect(addr3).approve(BBTranche.address, 10000)
+    ).wait();
+  });
+
+  it("depositAA to IdleCDO", async function () {
+    let beforeAAbal = await AATranche.balanceOf(addr1.address);
+    let beforetokenbal = await token.balanceOf(addr1.address);
+    await (await IdleCDO.connect(addr1).depositAA(10000)).wait();
+    let afterAAbal = await AATranche.balanceOf(addr1.address);
+    let aftertokenbal = await token.balanceOf(addr1.address);
+    expect(afterAAbal).to.be.eq(beforeAAbal.add(10000));
+    expect(aftertokenbal).to.be.eq(beforetokenbal.sub(10000));
+  });
+
+  it("withdrawAA from IdleCDO", async () => {
+    await (await IdleCDO.connect(addr1).depositAA(10000)).wait();
+    let beforeAAbal = await AATranche.balanceOf(addr1.address);
+    let beforetokenbal = await token.balanceOf(addr1.address);
+    await (await IdleCDO.connect(addr1).withdrawAA(10000)).wait();
+    let afterAAbal = await AATranche.balanceOf(addr1.address);
+    let aftertokenbal = await token.balanceOf(addr1.address);
+    expect(afterAAbal).to.be.eq(beforeAAbal.sub(10000));
+    expect(aftertokenbal).to.be.eq(beforetokenbal.add(10000));
+  });
+
+  it("depositAA to AATranche", async () => {
+    let beforeAAbal = await AATranche.balanceOf(addr1.address);
+    let beforetokenbal = await token.balanceOf(addr1.address);
+    await (await AATranche.connect(addr1).deposit(10000, addr1.address)).wait();
+    let afterAAbal = await AATranche.balanceOf(addr1.address);
+    let aftertokenbal = await token.balanceOf(addr1.address);
+    expect(afterAAbal).to.be.eq(beforeAAbal.add(10000));
+    expect(aftertokenbal).to.be.eq(beforetokenbal.sub(10000));
+  });
+
+  it("withdrawAA from AATranche", async () => {
+    await (await AATranche.connect(addr1).deposit(10000, addr1.address)).wait();
+    let beforeAAbal = await AATranche.balanceOf(addr1.address);
+    let beforetokenbal = await token.balanceOf(addr1.address);
+    await (
+      await AATranche.connect(addr1).withdraw(
+        10000,
+        addr1.address,
+        addr1.address
+      )
+    ).wait();
+    let afterAAbal = await AATranche.balanceOf(addr1.address);
+    let aftertokenbal = await token.balanceOf(addr1.address);
+    expect(afterAAbal).to.be.eq(beforeAAbal.sub(10000));
+    expect(aftertokenbal).to.be.eq(beforetokenbal.add(10000));
+  });
+
+  it("mint from AATranche", async () => {
+    let beforeAAbal = await AATranche.balanceOf(addr1.address);
+    let beforetokenbal = await token.balanceOf(addr1.address);
+    // await(await AATranche.connect(addr1).mint(10000, addr1.address)).wait();
+    await (
+      await AATranche.connect(addr1)["mint(uint256,address)"](
+        10000,
+        addr1.address
+      )
+    ).wait();
+    let afterAAbal = await AATranche.balanceOf(addr1.address);
+    let aftertokenbal = await token.balanceOf(addr1.address);
+    expect(afterAAbal).to.be.eq(beforeAAbal.add(10000));
+    expect(aftertokenbal).to.be.eq(beforetokenbal.sub(10000));
+  });
+
+  it("redeem from AATranche", async () => {
+    await (
+      await AATranche.connect(addr1)["mint(uint256,address)"](
+        10000,
+        addr1.address
+      )
+    ).wait();
+    let beforeAAbal = await AATranche.balanceOf(addr1.address);
+    let beforetokenbal = await token.balanceOf(addr1.address);
+    await (
+      await AATranche.connect(addr1).redeem(10000, addr1.address, addr1.address)
+    ).wait();
+    let afterAAbal = await AATranche.balanceOf(addr1.address);
+    let aftertokenbal = await token.balanceOf(addr1.address);
+    expect(afterAAbal).to.be.eq(beforeAAbal.sub(10000));
+    expect(aftertokenbal).to.be.eq(beforetokenbal.add(10000));
   });
 });
