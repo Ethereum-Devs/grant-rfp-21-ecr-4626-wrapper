@@ -35,9 +35,7 @@ contract TrancheWrapper is ERC20, IERC4626 {
         override
         returns (uint256 assets)
     {
-        uint256 amount = (shares *
-            IdleCDO.tranchePrice(address(trancheToken))) /
-            IdleCDO.ONE_TRANCHE_TOKEN();
+        uint256 amount = previewMint(shares);
         assets = deposit(amount, receiver);
     }
 
@@ -70,8 +68,7 @@ contract TrancheWrapper is ERC20, IERC4626 {
         address receiver,
         address owner
     ) public override returns (uint256 shares) {
-        uint256 amount = (assets * IdleCDO.ONE_TRANCHE_TOKEN()) /
-            IdleCDO.tranchePrice(address(trancheToken));
+        uint256 amount = previewWithdraw(assets);
         shares = redeem(amount, receiver, owner);
     }
 
