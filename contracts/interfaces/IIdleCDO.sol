@@ -38,6 +38,10 @@ interface IIdleCDO {
 
     function ONE_TRANCHE_TOKEN() external view returns (uint256);
 
+    function FULL_ALLOC() external view returns (uint256);
+
+    function limit() external view returns (uint256);
+
     function depositAA(uint256) external returns (uint256);
 
     function depositBB(uint256) external returns (uint256);

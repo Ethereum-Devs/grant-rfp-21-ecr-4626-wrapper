@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0
-pragma solidity ^0.8.12;
+//SPDX-License-Identifier: Unlicense
+pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -7,29 +7,27 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IIdleCDO} from "./interfaces/IIdleCDO.sol";
 import "./interfaces/IERC4626.sol";
-import "./interfaces/ITrancheWrapper.sol";
 
-contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
-    address public immutable minter;
-
+contract TrancheWrapper is ERC20, IERC4626 {
     IIdleCDO public immutable IdleCDO;
     ERC20 public immutable token;
+    ERC20 public immutable trancheToken;
 
     constructor(
         string memory _name,
         string memory _symbol,
-        ERC20 token_
+        IIdleCDO _IdleCDO,
+        ERC20 _trancheToken
     ) ERC20(_name, _symbol) {
-        IdleCDO = IIdleCDO(msg.sender);
-        token = token_;
-        minter = msg.sender;
-    }
-
-    /// @param account that should receive the tranche tokens
-    /// @param amount of tranche tokens to mint
-    function mint(address account, uint256 amount) external {
-        require(msg.sender == minter, "TRANCHE:!AUTH");
-        _mint(account, amount);
+        require(address(_IdleCDO) != address(0), "zero address");
+        require(
+            address(_IdleCDO.AATranche()) == address(_trancheToken) ||
+                address(_IdleCDO.BBTranche()) == address(_trancheToken),
+            "not correct trancheToken"
+        );
+        IdleCDO = _IdleCDO;
+        token = ERC20(IdleCDO.token());
+        trancheToken = _trancheToken;
     }
 
     function mint(uint256 shares, address receiver)
@@ -37,25 +35,25 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         override
         returns (uint256 assets)
     {
-        assets = previewMint(shares);
-        _deposit(assets, msg.sender, msg.sender);
-
-        emit Deposit(msg.sender, receiver, assets, shares);
+        uint256 amount = (shares *
+            IdleCDO.tranchePrice(address(trancheToken))) /
+            IdleCDO.ONE_TRANCHE_TOKEN();
+        assets = deposit(amount, receiver);
     }
 
-    /// @param account that should have the tranche tokens burned
-    /// @param amount of tranche tokens to burn
-    function burn(address account, uint256 amount) external {
-        require(msg.sender == minter, "TRANCHE:!AUTH");
-        _burn(account, amount);
-    }
-
-    function vault() external view override returns (address) {
-        return address(IdleCDO);
-    }
-
-    function asset() external view override returns (address) {
-        return address(token);
+    function redeem(
+        uint256 shares,
+        address receiver,
+        address owner
+    ) public override returns (uint256 assets) {
+        require(msg.sender == owner, "only owner's can be redeemed");
+        (uint256 _withdrawn, uint256 _burntShares) = _withdraw(
+            shares,
+            receiver,
+            msg.sender
+        );
+        assets = _withdrawn;
+        emit Withdraw(msg.sender, receiver, owner, _withdrawn, _burntShares);
     }
 
     function deposit(uint256 assets, address receiver)
@@ -64,7 +62,6 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         returns (uint256 shares)
     {
         (assets, shares) = _deposit(assets, receiver, msg.sender);
-
         emit Deposit(msg.sender, receiver, assets, shares);
     }
 
@@ -73,27 +70,9 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         address receiver,
         address owner
     ) public override returns (uint256 shares) {
-        (uint256 _withdrawn, uint256 _burntShares) = _withdraw(
-            assets,
-            receiver,
-            msg.sender
-        );
-        shares = _burntShares;
-        emit Withdraw(msg.sender, receiver, owner, _withdrawn, _burntShares);
-    }
-
-    function redeem(
-        uint256 shares,
-        address receiver,
-        address owner
-    ) public override returns (uint256 assets) {
-        assets = previewRedeem(shares);
-        (uint256 _withdrawn, uint256 _burntShares) = _withdraw(
-            assets,
-            receiver,
-            msg.sender
-        );
-        emit Withdraw(msg.sender, receiver, owner, _withdrawn, _burntShares);
+        uint256 amount = (assets * IdleCDO.ONE_TRANCHE_TOKEN()) /
+            IdleCDO.tranchePrice(address(trancheToken));
+        shares = redeem(amount, receiver, owner);
     }
 
     function _deposit(
@@ -102,15 +81,14 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         address depositor
     ) internal returns (uint256 deposited, uint256 mintedShares) {
         SafeERC20.safeTransferFrom(token, depositor, address(this), amount);
-        token.approve(address(IdleCDO), ~uint256(0));
-        if (isTrancheAA()) {
-            deposited = amount;
+        token.approve(address(IdleCDO), amount);
+        deposited = amount;
+        if (IdleCDO.AATranche() == address(trancheToken)) {
             mintedShares = IdleCDO.depositAA(deposited);
         } else {
-            deposited = amount;
             mintedShares = IdleCDO.depositBB(deposited);
         }
-        SafeERC20.safeTransfer(this, receiver, mintedShares);
+        _mint(receiver, mintedShares);
     }
 
     function _withdraw(
@@ -118,18 +96,20 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         address receiver,
         address sender
     ) internal returns (uint256 withdrawn, uint256 burntShares) {
-        burntShares = previewWithdraw(amount);
-        SafeERC20.safeTransferFrom(this, sender, address(this), burntShares);
-        if (isTrancheAA()) {
-            withdrawn = IdleCDO.withdrawAA(burntShares);
+        _burn(sender, amount);
+        if (IdleCDO.AATranche() == address(trancheToken)) {
+            withdrawn = IdleCDO.withdrawAA(amount);
         } else {
-            withdrawn = IdleCDO.withdrawBB(burntShares);
+            withdrawn = IdleCDO.withdrawBB(amount);
         }
+        burntShares = amount;
         SafeERC20.safeTransfer(token, receiver, withdrawn);
     }
 
     function totalAssets() public view override returns (uint256) {
-        return token.balanceOf(address(IdleCDO));
+        return
+            (IdleCDO.getContractValue() * IdleCDO.getCurrentAARatio()) /
+            IdleCDO.FULL_ALLOC();
     }
 
     function convertToShares(uint256 assets)
@@ -140,7 +120,7 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
     {
         return
             (assets * IdleCDO.ONE_TRANCHE_TOKEN()) /
-            IdleCDO.tranchePrice(address(this));
+            IdleCDO.virtualPrice((address(this)));
     }
 
     function convertToAssets(uint256 shares)
@@ -149,7 +129,7 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         override
         returns (uint256)
     {
-        return ((shares * IdleCDO.tranchePrice(address(this))) /
+        return ((shares * IdleCDO.virtualPrice((address(this)))) /
             IdleCDO.ONE_TRANCHE_TOKEN());
     }
 
@@ -196,7 +176,11 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         returns (uint256)
     {
         _account;
-        return ~uint256(0) - totalAssets();
+        if (IdleCDO.limit() == 0) {
+            return ~uint256(0) - IdleCDO.getContractValue();
+        } else {
+            return IdleCDO.limit() - IdleCDO.getContractValue();
+        }
     }
 
     function maxMint(address _account) public view override returns (uint256) {
@@ -216,7 +200,7 @@ contract TrancheWrapper is ERC20, ITrancheWrapper, IERC4626 {
         return this.balanceOf(owner);
     }
 
-    function isTrancheAA() private view returns (bool) {
-        return IdleCDO.AATranche() == address(this);
+    function asset() external view override returns (address) {
+        return address(token);
     }
 }
